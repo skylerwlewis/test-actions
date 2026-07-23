@@ -1,0 +1,130 @@
+name: E2E Tests (From URL)
+
+# Runs Playwright E2E tests against a pre-known URL and posts results to a PR.
+# Intended for deployment_status-triggered workflows where the preview URL is
+# available immediately from the event payload — no polling required.
+
+on:
+  workflow_call:
+    inputs:
+      base-url:
+        description: The URL to run E2E tests against.
+        type: string
+        required: true
+      pr-number:
+        description: PR number to post results to.
+        type: number
+        required: true
+      node-version:
+        description: Node.js version to use.
+        type: string
+        required: false
+        default: '24'
+      playwright-channel:
+        description: Playwright browser channel (e.g. chrome, msedge).
+        type: string
+        required: false
+        default: chrome
+
+jobs:
+  e2e-from-url:
+    name: E2E Tests (Preview)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      issues: write
+      pull-requests: write
+      contents: read
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      PLAYWRIGHT_CHANNEL: ${{ inputs.playwright-channel }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+
+      - run: npm ci
+        timeout-minutes: 15
+
+      - name: Run E2E tests against preview URL
+        timeout-minutes: 20
+        run: npm run test:e2e
+        env:
+          BASE_URL: ${{ inputs.base-url }}
+          CI: true
+
+      - name: Report E2E test results
+        if: always()
+        uses: actions/github-script@v7
+        env:
+          RESULTS_FILE: test-results/playwright-results.json
+          COMMENT_MARKER: '<!-- playwright-preview-results -->'
+          LABEL: Preview
+          PR_NUMBER: ${{ inputs.pr-number }}
+        with:
+          script: |
+            const fs = require('fs');
+            const file = process.env.RESULTS_FILE;
+            const marker = process.env.COMMENT_MARKER;
+            const label = process.env.LABEL;
+            let passed = 0, failed = 0, flaky = 0, skipped = 0, total = 0;
+            if (fs.existsSync(file)) {
+              const r = JSON.parse(fs.readFileSync(file, 'utf8'));
+              passed = r.stats?.expected ?? 0;
+              failed = r.stats?.unexpected ?? 0;
+              flaky = r.stats?.flaky ?? 0;
+              skipped = r.stats?.skipped ?? 0;
+              total = passed + failed + flaky + skipped;
+            }
+            const icon = failed > 0 ? '❌' : '✅';
+            const heading = label
+              ? `${icon} E2E Test Results (${label})`
+              : `${icon} E2E Test Results`;
+            await core.summary
+              .addHeading(heading)
+              .addTable([
+                [{data: '', header: true}, {data: 'Count', header: true}],
+                [{data: '✅ Passed'}, {data: String(passed)}],
+                [{data: '❌ Failed'}, {data: String(failed)}],
+                [{data: '🔁 Flaky'}, {data: String(flaky)}],
+                [{data: '⏭️ Skipped'}, {data: String(skipped)}],
+                [{data: 'Total'}, {data: String(total)}],
+              ])
+              .write();
+            const body = [
+              marker,
+              `## ${heading}`,
+              '',
+              '| | Count |',
+              '|---|---|',
+              `| ✅ Passed | ${passed} |`,
+              `| ❌ Failed | ${failed} |`,
+              `| 🔁 Flaky | ${flaky} |`,
+              `| ⏭️ Skipped | ${skipped} |`,
+              `| **Total** | **${total}** |`,
+            ].join('\n');
+            const { owner, repo } = context.repo;
+            const prNumber = process.env.PR_NUMBER
+              ? parseInt(process.env.PR_NUMBER, 10)
+              : context.payload.pull_request?.number;
+            if (!prNumber) throw new Error('No PR number available — pass pr-number input or trigger from a pull_request event.');
+            const { data: comments } = await github.rest.issues.listComments({
+              owner, repo, issue_number: prNumber, per_page: 100,
+            });
+            const existing = comments.find(c => c.body?.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number: prNumber, body });
+            }
+
+      - name: Upload Playwright report
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report-preview
+          path: playwright-report/
+          retention-days: 7
