@@ -142,13 +142,23 @@ jobs:
             }
             const checkRunId = process.env.CHECK_RUN_ID ? parseInt(process.env.CHECK_RUN_ID, 10) : null;
             if (checkRunId) {
+              // Look up the specific job URL so the Details link goes straight
+              // to the e2e job page rather than the workflow summary.
+              let detailsUrl = `https://github.com/${owner}/${repo}/actions/runs/${context.runId}`;
+              try {
+                const { data: jobsData } = await github.rest.actions.listJobsForWorkflowRun({
+                  owner, repo, run_id: context.runId, filter: 'latest',
+                });
+                const job = jobsData.jobs.find(j => j.name.includes('E2E Tests (Preview)'));
+                if (job?.html_url) detailsUrl = job.html_url;
+              } catch (_) { /* fall back to run URL */ }
               await github.rest.checks.update({
                 owner, repo,
                 check_run_id: checkRunId,
                 status: 'completed',
                 conclusion: failed > 0 ? 'failure' : 'success',
                 completed_at: new Date().toISOString(),
-                details_url: `https://github.com/${owner}/${repo}/actions/runs/${context.runId}`,
+                details_url: detailsUrl,
                 output: {
                   title: failed > 0 ? `${failed} test(s) failed` : `${passed} test(s) passed`,
                   summary: `Passed: ${passed} | Failed: ${failed} | Flaky: ${flaky} | Skipped: ${skipped}`,
