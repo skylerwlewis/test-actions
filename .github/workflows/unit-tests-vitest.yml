@@ -1,0 +1,100 @@
+name: Unit Tests (Vitest)
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: Node.js version to use.
+        type: string
+        required: false
+        default: '24'
+      test-command:
+        description: >
+          Full npm test command including reporter flags and output file.
+          Override if your project uses a non-standard invocation.
+        type: string
+        required: false
+        default: >-
+          npm test -- --run --reporter=verbose --reporter=json
+          --outputFile=test-results/vitest-results.json
+      results-file:
+        description: Path to the vitest JSON results file.
+        type: string
+        required: false
+        default: test-results/vitest-results.json
+      comment-marker:
+        description: HTML comment marker for the PR results comment.
+        type: string
+        required: false
+        default: '<!-- vitest-test-results -->'
+
+jobs:
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+      - run: npm ci
+      - run: mkdir -p test-results
+      - run: ${{ inputs.test-command }}
+      - name: Report unit test results
+        if: always()
+        uses: actions/github-script@v7
+        env:
+          RESULTS_FILE: ${{ inputs.results-file }}
+          COMMENT_MARKER: ${{ inputs.comment-marker }}
+          HEADING: Unit Test Results
+        with:
+          script: |
+            const fs = require('fs');
+            const file = process.env.RESULTS_FILE;
+            const marker = process.env.COMMENT_MARKER;
+            const heading = process.env.HEADING;
+            let passed = 0, failed = 0, skipped = 0, total = 0;
+            if (fs.existsSync(file)) {
+              const r = JSON.parse(fs.readFileSync(file, 'utf8'));
+              passed = r.numPassedTests;
+              failed = r.numFailedTests;
+              skipped = r.numPendingTests;
+              total = r.numTotalTests;
+            }
+            const icon = failed > 0 ? '❌' : '✅';
+            await core.summary
+              .addHeading(`${icon} ${heading}`)
+              .addTable([
+                [{data: '', header: true}, {data: 'Count', header: true}],
+                [{data: '✅ Passed'}, {data: String(passed)}],
+                [{data: '❌ Failed'}, {data: String(failed)}],
+                [{data: '⏭️ Skipped'}, {data: String(skipped)}],
+                [{data: 'Total'}, {data: String(total)}],
+              ])
+              .write();
+            const body = [
+              marker,
+              `## ${icon} ${heading}`,
+              '',
+              '| | Count |',
+              '|---|---|',
+              `| ✅ Passed | ${passed} |`,
+              `| ❌ Failed | ${failed} |`,
+              `| ⏭️ Skipped | ${skipped} |`,
+              `| **Total** | **${total}** |`,
+            ].join('\n');
+            const { owner, repo } = context.repo;
+            const prNumber = context.payload.pull_request.number;
+            const { data: comments } = await github.rest.issues.listComments({
+              owner, repo, issue_number: prNumber, per_page: 100,
+            });
+            const existing = comments.find(c => c.body?.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number: prNumber, body });
+            }

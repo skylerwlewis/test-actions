@@ -1,0 +1,25 @@
+name: Typecheck
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: Node.js version to use.
+        type: string
+        required: false
+        default: '24'
+
+jobs:
+  typecheck:
+    name: Typecheck
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
