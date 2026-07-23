@@ -148,6 +148,7 @@ jobs:
                 status: 'completed',
                 conclusion: failed > 0 ? 'failure' : 'success',
                 completed_at: new Date().toISOString(),
+                details_url: `https://github.com/${owner}/${repo}/actions/runs/${context.runId}`,
                 output: {
                   title: failed > 0 ? `${failed} test(s) failed` : `${passed} test(s) passed`,
                   summary: `Passed: ${passed} | Failed: ${failed} | Flaky: ${flaky} | Skipped: ${skipped}`,

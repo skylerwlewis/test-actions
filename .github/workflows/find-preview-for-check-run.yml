@@ -114,6 +114,7 @@ jobs:
               head_sha: process.env.HEAD_SHA,
               status: 'in_progress',
               started_at: new Date().toISOString(),
+              details_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
             });
             core.info(`Created check run ${checkRun.id} for ${process.env.HEAD_SHA}`);
             core.setOutput('check-run-id', String(checkRun.id));
