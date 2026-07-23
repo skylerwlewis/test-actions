@@ -33,6 +33,14 @@ on:
         type: string
         required: false
         default: ''
+      check-run-id:
+        description: >-
+          ID of an existing in_progress GitHub check run to update with the
+          test conclusion. When provided, the check run is updated to
+          success or failure after tests complete. Leave empty to skip.
+        type: string
+        required: false
+        default: ''
 
 jobs:
   e2e-from-url:
@@ -43,6 +51,7 @@ jobs:
       issues: write
       pull-requests: write
       contents: read
+      checks: write
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
       PLAYWRIGHT_CHANNEL: ${{ inputs.playwright-channel }}
@@ -74,6 +83,7 @@ jobs:
           COMMENT_MARKER: '<!-- playwright-preview-results -->'
           LABEL: Preview
           PR_NUMBER: ${{ inputs.pr-number }}
+          CHECK_RUN_ID: ${{ inputs.check-run-id }}
         with:
           script: |
             const fs = require('fs');
@@ -129,6 +139,20 @@ jobs:
               await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
             } else {
               await github.rest.issues.createComment({ owner, repo, issue_number: prNumber, body });
+            }
+            const checkRunId = process.env.CHECK_RUN_ID ? parseInt(process.env.CHECK_RUN_ID, 10) : null;
+            if (checkRunId) {
+              await github.rest.checks.update({
+                owner, repo,
+                check_run_id: checkRunId,
+                status: 'completed',
+                conclusion: failed > 0 ? 'failure' : 'success',
+                completed_at: new Date().toISOString(),
+                output: {
+                  title: failed > 0 ? `${failed} test(s) failed` : `${passed} test(s) passed`,
+                  summary: `Passed: ${passed} | Failed: ${failed} | Flaky: ${flaky} | Skipped: ${skipped}`,
+                },
+              });
             }
 
       - name: Upload Playwright report

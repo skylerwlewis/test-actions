@@ -20,6 +20,9 @@ on:
       head-sha:
         description: The head SHA from the check run event.
         value: ${{ jobs.find-preview.outputs.head-sha }}
+      check-run-id:
+        description: ID of the in_progress check run created for this PR, or empty string.
+        value: ${{ jobs.find-preview.outputs.check-run-id }}
 
 jobs:
   find-preview:
@@ -28,10 +31,12 @@ jobs:
     permissions:
       pull-requests: read
       contents: read
+      checks: write
     outputs:
       pr-number: ${{ steps.find.outputs.pr-number }}
       preview-url: ${{ steps.find.outputs.preview-url }}
       head-sha: ${{ steps.find.outputs.head-sha }}
+      check-run-id: ${{ steps.create-check.outputs.check-run-id }}
     steps:
       - name: Find open PR and Cloudflare preview URL
         id: find
@@ -93,3 +98,22 @@ jobs:
             }
             core.warning(`Cloudflare preview URL not found for ${shortSha} after retries.`);
             core.setOutput('preview-url', '');
+
+      - name: Create in-progress check run on PR
+        id: create-check
+        if: steps.find.outputs.pr-number != ''
+        uses: actions/github-script@v7
+        env:
+          HEAD_SHA: ${{ steps.find.outputs.head-sha }}
+        with:
+          script: |
+            const { data: checkRun } = await github.rest.checks.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              name: 'E2E Tests (Preview)',
+              head_sha: process.env.HEAD_SHA,
+              status: 'in_progress',
+              started_at: new Date().toISOString(),
+            });
+            core.info(`Created check run ${checkRun.id} for ${process.env.HEAD_SHA}`);
+            core.setOutput('check-run-id', String(checkRun.id));
