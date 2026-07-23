@@ -56,6 +56,30 @@ jobs:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
       PLAYWRIGHT_CHANNEL: ${{ inputs.playwright-channel }}
     steps:
+      - name: Update check run with job URL
+        if: inputs.check-run-id != ''
+        uses: actions/github-script@v7
+        env:
+          CHECK_RUN_ID: ${{ inputs.check-run-id }}
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const checkRunId = parseInt(process.env.CHECK_RUN_ID, 10);
+            let detailsUrl = `https://github.com/${owner}/${repo}/actions/runs/${context.runId}`;
+            try {
+              const { data: jobsData } = await github.rest.actions.listJobsForWorkflowRun({
+                owner, repo, run_id: context.runId, filter: 'latest',
+              });
+              const job = jobsData.jobs.find(j => j.name.includes('E2E Tests (Preview)'));
+              if (job?.html_url) detailsUrl = job.html_url;
+            } catch (_) { /* fall back to run URL */ }
+            await github.rest.checks.update({
+              owner, repo,
+              check_run_id: checkRunId,
+              status: 'in_progress',
+              details_url: detailsUrl,
+            });
+
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.checkout-ref || github.sha }}
