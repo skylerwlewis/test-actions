@@ -1,0 +1,95 @@
+name: Find Preview for Check Run
+
+# Reads the check_run head_sha from the caller's event context, finds the open
+# PR associated with that commit, and extracts the Cloudflare preview URL from
+# the bot's PR comment. Returns empty outputs if no matching PR or URL is found.
+
+on:
+  workflow_call:
+    outputs:
+      pr-number:
+        description: >
+          The open PR number whose head SHA matches this check run, or empty
+          string if no matching PR was found.
+        value: ${{ jobs.find-preview.outputs.pr-number }}
+      preview-url:
+        description: >
+          The Cloudflare preview URL for this commit, or empty string if the
+          comment was not found within the retry window.
+        value: ${{ jobs.find-preview.outputs.preview-url }}
+      head-sha:
+        description: The head SHA from the check run event.
+        value: ${{ jobs.find-preview.outputs.head-sha }}
+
+jobs:
+  find-preview:
+    name: Find Preview for Check Run
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+      contents: read
+    outputs:
+      pr-number: ${{ steps.find.outputs.pr-number }}
+      preview-url: ${{ steps.find.outputs.preview-url }}
+      head-sha: ${{ steps.find.outputs.head-sha }}
+    steps:
+      - name: Find open PR and Cloudflare preview URL
+        id: find
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const sha = context.payload.check_run?.head_sha;
+            if (!sha) {
+              core.info('No check_run head_sha in event context, skipping.');
+              core.setOutput('pr-number', '');
+              core.setOutput('preview-url', '');
+              core.setOutput('head-sha', '');
+              return;
+            }
+
+            const shortSha = sha.substring(0, 7);
+            core.setOutput('head-sha', sha);
+
+            const { owner, repo } = context.repo;
+
+            // Find open PR whose current head matches this commit.
+            const { data: prs } = await github.rest.pulls.list({
+              owner, repo, state: 'open', per_page: 100,
+            });
+            const pr = prs.find(p => p.head.sha === sha);
+            if (!pr) {
+              core.info(`No open PR found for check run SHA ${sha}, skipping.`);
+              core.setOutput('pr-number', '');
+              core.setOutput('preview-url', '');
+              return;
+            }
+            core.info(`Found PR #${pr.number} for SHA ${sha}`);
+            core.setOutput('pr-number', String(pr.number));
+
+            // The Cloudflare PR comment is posted at roughly the same time as
+            // the check run completes. Retry briefly in case of a small lag.
+            for (let attempt = 1; attempt <= 6; attempt++) {
+              const { data: comments } = await github.rest.issues.listComments({
+                owner, repo, issue_number: pr.number, per_page: 50,
+              });
+              const cfComment = comments.find(c =>
+                c.user.login === 'cloudflare-workers-and-pages[bot]' &&
+                c.body.includes(shortSha) &&
+                c.body.includes('Commit Preview URL')
+              );
+              if (cfComment) {
+                const urlMatch = cfComment.body.match(/<a href='(https:\/\/[^']+)'>Commit Preview URL<\/a>/);
+                const url = urlMatch?.[1];
+                if (url) {
+                  core.info(`Found preview URL: ${url}`);
+                  core.setOutput('preview-url', url);
+                  return;
+                }
+              }
+              if (attempt < 6) {
+                core.info(`Attempt ${attempt}/6: Cloudflare comment not ready yet, waiting 10s...`);
+                await new Promise(r => setTimeout(r, 10_000));
+              }
+            }
+            core.warning(`Cloudflare preview URL not found for ${shortSha} after retries.`);
+            core.setOutput('preview-url', '');

@@ -1,8 +1,8 @@
 name: E2E Tests (From URL)
 
 # Runs Playwright E2E tests against a pre-known URL and posts results to a PR.
-# Intended for deployment_status-triggered workflows where the preview URL is
-# available immediately from the event payload — no polling required.
+# Intended for check_run-triggered workflows where the preview URL is extracted
+# from the Cloudflare PR comment immediately after the build check completes.
 
 on:
   workflow_call:
@@ -25,6 +25,14 @@ on:
         type: string
         required: false
         default: chrome
+      checkout-ref:
+        description: >-
+          Git ref (SHA or branch) to checkout. Defaults to github.sha when
+          omitted. Pass the check_run head_sha when triggered via check_run
+          events so the correct PR code is tested rather than the default branch.
+        type: string
+        required: false
+        default: ''
 
 jobs:
   e2e-from-url:
@@ -40,6 +48,8 @@ jobs:
       PLAYWRIGHT_CHANNEL: ${{ inputs.playwright-channel }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.checkout-ref || github.sha }}
 
       - uses: actions/setup-node@v4
         with:
