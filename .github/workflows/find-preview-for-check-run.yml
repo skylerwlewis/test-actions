@@ -1,11 +1,19 @@
 name: Find Preview for Check Run
 
-# Reads the check_run head_sha from the caller's event context, finds the open
-# PR associated with that commit, and extracts the Cloudflare preview URL.
-# The URL is read directly from the completed check run's own output (already
-# present in the event payload, no wait required), falling back to the bot's
-# PR comment if it's ever missing from the check run output. Returns empty
-# outputs if no matching PR or URL is found.
+# Finds the open PR and Cloudflare preview URL for a completed Cloudflare
+# "Workers Builds: ..." check run, from either caller event:
+#
+# - check_run (completed): the build check from the event payload; the PR is
+#   the open PR whose head is that commit.
+# - pull_request (opened/reopened): the PR from the event payload; the build
+#   check is the completed, successful "Workers Builds: ..." check on its head.
+#   This covers a PR opened after its build already finished, when the
+#   check_run event found no open PR. If the build is still running, this
+#   skips; the check_run event handles it when the build completes.
+#
+# The URL is read directly from the build check's own output (no wait
+# required), falling back to the bot's PR comment if it's ever missing from the
+# check run output. Returns empty outputs if no matching PR or URL is found.
 
 on:
   workflow_call:
@@ -21,7 +29,7 @@ on:
           could not be found in the check run output or PR comment.
         value: ${{ jobs.find-preview.outputs.preview-url }}
       head-sha:
-        description: The head SHA from the check run event.
+        description: The head SHA of the PR / build check run.
         value: ${{ jobs.find-preview.outputs.head-sha }}
       check-run-id:
         description: ID of the in_progress check run created for this PR, or empty string.
@@ -46,32 +54,53 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const checkRun = context.payload.check_run;
-            const sha = checkRun?.head_sha;
-            if (!sha) {
-              core.info('No check_run head_sha in event context, skipping.');
-              core.setOutput('pr-number', '');
-              core.setOutput('preview-url', '');
-              core.setOutput('head-sha', '');
-              return;
-            }
-
-            const shortSha = sha.substring(0, 7);
-            core.setOutput('head-sha', sha);
-
             const { owner, repo } = context.repo;
-
-            // Find open PR whose current head matches this commit.
-            const { data: prs } = await github.rest.pulls.list({
-              owner, repo, state: 'open', per_page: 100,
-            });
-            const pr = prs.find(p => p.head.sha === sha);
-            if (!pr) {
-              core.info(`No open PR found for check run SHA ${sha}, skipping.`);
+            const skip = (message) => {
+              core.info(message);
               core.setOutput('pr-number', '');
               core.setOutput('preview-url', '');
-              return;
+            };
+
+            let checkRun;
+            let pr;
+            if (context.eventName === 'pull_request') {
+              pr = context.payload.pull_request;
+              const prSha = pr.head.sha;
+              core.setOutput('head-sha', prSha);
+              const { data } = await github.rest.checks.listForRef({
+                owner, repo, ref: prSha, per_page: 100,
+              });
+              checkRun = data.check_runs.find(c =>
+                c.name.startsWith('Workers Builds:') &&
+                c.status === 'completed' &&
+                c.conclusion === 'success'
+              );
+              if (!checkRun) {
+                return skip(`No successful Workers Builds check on ${prSha} yet; the check_run event runs E2E when the build completes.`);
+              }
+              if (data.check_runs.some(c => c.name === 'E2E Tests (Preview)')) {
+                return skip(`E2E Tests (Preview) already exists on ${prSha}, skipping.`);
+              }
+            } else {
+              checkRun = context.payload.check_run;
+              if (!checkRun?.head_sha) {
+                core.setOutput('head-sha', '');
+                return skip('No check_run head_sha in event context, skipping.');
+              }
+              core.setOutput('head-sha', checkRun.head_sha);
+
+              // Find open PR whose current head matches this commit.
+              const { data: prs } = await github.rest.pulls.list({
+                owner, repo, state: 'open', per_page: 100,
+              });
+              pr = prs.find(p => p.head.sha === checkRun.head_sha);
+              if (!pr) {
+                return skip(`No open PR found for check run SHA ${checkRun.head_sha}, skipping. If a PR is opened later, its pull_request event runs E2E.`);
+              }
             }
+
+            const sha = checkRun.head_sha;
+            const shortSha = sha.substring(0, 7);
             core.info(`Found PR #${pr.number} for SHA ${sha}`);
             core.setOutput('pr-number', String(pr.number));
 
