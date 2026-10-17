@@ -123,13 +123,23 @@ jobs:
           HEAD_SHA: ${{ steps.find.outputs.head-sha }}
         with:
           script: |
+            const { owner, repo } = context.repo;
+            const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
+            // GITHUB_TOKEN cannot set details_url (GitHub overrides it), and this run executes
+            // in main's context, so it does not appear on the PR. external_id + output are
+            // writable, so they carry the link from the PR check back to this run.
             const { data: checkRun } = await github.rest.checks.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
+              owner,
+              repo,
               name: 'E2E Tests (Preview)',
               head_sha: process.env.HEAD_SHA,
               status: 'in_progress',
               started_at: new Date().toISOString(),
+              external_id: String(context.runId),
+              output: {
+                title: 'Running E2E tests against preview',
+                summary: `Logs: [workflow run ${context.runId}](${runUrl})`,
+              },
             });
             core.info(`Created check run ${checkRun.id} for ${process.env.HEAD_SHA}`);
             core.setOutput('check-run-id', String(checkRun.id));
